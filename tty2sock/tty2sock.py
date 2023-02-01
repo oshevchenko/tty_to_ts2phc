@@ -6,6 +6,7 @@ import threading
 import traceback
 import time
 import queue
+import pynmea2
 
 
 class PhcServer(object):
@@ -15,27 +16,52 @@ class PhcServer(object):
     MAX_BUFFER_SIZE = 2048
     QUEUE_SIZE = 20
     def __init__(self, host='localhost', port=4161, tty_path=None):
+        self._nmea_tags = ['GGA', 'RMC']
+        self.data = {}
+        for i in self._nmea_tags:
+            self.data[i] = {}
         self._host = host
         self._port = port
         self._tty_path = tty_path
-        self._running = True
+        self._tty_running = True
+        self._server_running = True
         self._dummy_line = b'$GPGGA,000001.000,,,,,0,00,,,,,,,*79\r\n'
         self._queue = queue.Queue(maxsize=self.QUEUE_SIZE)
         self._condition = threading.Condition()
-        self._thr = threading.Thread(target=self._thread_tty)
-        self._thr.start()
-        self._thr_sock = threading.Thread(target=self._thread_server)
-        self._thr_sock.start()
+        self._thr_tty = threading.Thread(target=self._thread_tty)
+        self._thr_tty.start()
+        self._thr_srv = threading.Thread(target=self._thread_server)
+        self._thr_srv.start()
+
+
+    def start(self):
+        if self._tty_running == False:
+            self._tty_running = True
+            self._thr_tty = threading.Thread(target=self._thread_tty)
+            self._thr_tty.start()
+        if self._server_running == False:
+            self._server_running = True
+            self._thr_srv = threading.Thread(target=self._thread_server)
+            self._thr_srv.start()
+
+
+    def stop(self):
+        if self._tty_running:
+            self._tty_running = False
+            self._thr_tty.join()
+        if self._server_running:
+            self._server_running = False
+            self._thr_srv.join()
 
 
     def add_tty(self, tty_path):
         try:
-            self._running = False
-            self._thr.join()
+            self._tty_running = False
+            self._thr_tty.join()
             self._tty_path = tty_path
-            self._thr = threading.Thread(target=self._thread_tty)
-            self._running = True
-            self._thr.start()
+            self._thr_tty = threading.Thread(target=self._thread_tty)
+            self._tty_running = True
+            self._thr_tty.start()
         except Exception as e:
             logging.error(e)
             logging.error(traceback.format_exc())
@@ -48,11 +74,11 @@ class PhcServer(object):
         s.listen(1)
         s.settimeout(self.SOCKET_TIMEOUT)
         conn = None
-        while True:
+        while self._server_running:
             try:
                 conn, addr = s.accept()
                 logging.info('Connected from {}'.format(addr))
-                while True:
+                while self._server_running:
                     with self._condition:
                         self._condition.wait()
                         while True:
@@ -72,6 +98,31 @@ class PhcServer(object):
             time.sleep(1)
 
 
+    def _parse_line(self, line):
+        try:
+            obj = {}
+            gps_data = {}
+            nmeaobj = pynmea2.parse(line)
+            for i in range(len(nmeaobj.fields)):
+                if (i < len(nmeaobj.data)):
+                    obj[str(nmeaobj.fields[i][0])] = str(nmeaobj.data[i])
+                else:
+                    obj[str(nmeaobj.fields[i][0])] = None
+            try:
+                gps_data[nmeaobj.sentence_type] = obj
+            except AttributeError:
+                logging.debug("Invalid sentence: {}".format(nmeaobj))
+
+            logging.debug("gps_data: {}".format(gps_data))
+
+            for sm in self._nmea_tags:
+                if sm in gps_data:
+                    self.data[sm] = gps_data[sm]
+
+        except (pynmea2.nmea.ParseError, pynmea2.nmea.ChecksumError) as e:
+            logging.warn("Ignoring line: {}".format(line))
+
+
     def _put_line_to_queue(self, line):
         with self._condition:
             try:
@@ -81,11 +132,16 @@ class PhcServer(object):
             self._condition.notify()
 
 
+    def _clear_data(self):
+        for i in self._nmea_tags:
+            self.data[i] = {}
+
+
     def _thread_tty(self):
         """Detect device by sending 'type' command."""
         ser = None
         logging.info('Process started {}'.format(self._tty_path))
-        while self._running:
+        while self._tty_running:
             try:
                 ser = serial.Serial(
                     port=self._tty_path,\
@@ -98,16 +154,19 @@ class PhcServer(object):
                 ser.flushInput()
                 ser.flushOutput()
 
-                while self._running:
+                while self._tty_running:
                     line = ser.readline(self.MAX_BUFFER_SIZE)
                     if len(line) == 0:
                         logging.error('Serial timeout!')
+                        self._clear_data()
                         continue
                     if len(line) >= self.MAX_BUFFER_SIZE:
                         logging.error('Serial buffer overflow!')
+                        self._clear_data()
                         continue
                     if line[0] != '$'.encode()[0]:
                         continue
+                    self._parse_line(line.decode('utf-8'))
                     self._put_line_to_queue(line)
             except (OSError, FileNotFoundError):
                 # /dev/ttyUSB0 does not exist.
@@ -124,13 +183,12 @@ class PhcServer(object):
             time.sleep(1)
 
 
-
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
     tty_dev = '/dev/ttyUSB1'
     if len(sys.argv) == 2:
         tty_dev = str(sys.argv[1])
-    server = PhcServer('192.168.3.10', 4161)
+    server = PhcServer('192.168.3.10', 4161, tty_dev)
     time.sleep(5)
     server.add_tty('/dev/ttyUSB2')
     time.sleep(10)
