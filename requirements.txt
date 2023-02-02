@@ -1,0 +1,7 @@
+future==0.18.3
+iso8601==1.1.0
+pynmea2==1.19.0
+pyserial==3.5
+PyYAML==6.0
+serial==0.0.97
+tty2sock==0.1.0

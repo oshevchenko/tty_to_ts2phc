@@ -7,6 +7,45 @@ import traceback
 import time
 import queue
 import pynmea2
+from .threadsafedata import ThreadSafeDict
+from dataclasses import dataclass, field
+import typing
+import json
+
+
+@dataclass
+class ThreadSafePhcServerDict(ThreadSafeDict):
+    nmea_tags: typing.List = field(default_factory=lambda: ['GGA', 'RMC'])
+
+    def __post_init__(self):
+        super().__post_init__()
+        data = {}
+        for i in self.nmea_tags:
+            data[i] = None
+        super().set_param('gnss', data)
+
+    def update_gnss_data(self, gnss_data):
+        with self.lock:
+            data = json.loads(self.tsd['gnss'])
+            for sm in self.nmea_tags:
+                if sm in gnss_data:
+                    data[sm] = gnss_data[sm]
+            self.tsd['gnss'] = json.dumps(data)
+
+
+    def set_gnss_data(self, gnss_data):
+        super().set_param('gnss', gnss_data)
+
+
+    def get_gnss_data(self):
+        return super().get_param('gnss')
+
+
+    def clear_gnss_data(self):
+        data = {}
+        for i in self.nmea_tags:
+            data[i] = None
+        super().set_param('gnss', data)
 
 
 class PhcServer(object):
@@ -16,10 +55,7 @@ class PhcServer(object):
     MAX_BUFFER_SIZE = 2048
     QUEUE_SIZE = 20
     def __init__(self, host='localhost', port=4161, tty_path=None):
-        self._nmea_tags = ['GGA', 'RMC']
-        self.data = {}
-        for i in self._nmea_tags:
-            self.data[i] = {}
+        self.ts_dict = ThreadSafePhcServerDict()
         self._host = host
         self._port = port
         self._tty_path = tty_path
@@ -35,6 +71,7 @@ class PhcServer(object):
 
 
     def start(self):
+        """Start all threads."""
         if self._tty_running == False:
             self._tty_running = True
             self._thr_tty = threading.Thread(target=self._thread_tty)
@@ -46,6 +83,7 @@ class PhcServer(object):
 
 
     def stop(self):
+        """Stop all threads."""
         if self._tty_running:
             self._tty_running = False
             self._thr_tty.join()
@@ -55,6 +93,7 @@ class PhcServer(object):
 
 
     def add_tty(self, tty_path):
+        """Update tty if new one hotplugged."""
         try:
             self._tty_running = False
             self._thr_tty.join()
@@ -68,37 +107,50 @@ class PhcServer(object):
             pass
 
 
+    def get_nmea_data(self):
+        """Get NMEA data from thread safe storage."""
+        return self.ts_dict.get_gnss_data()
+
+
     def _thread_server(self):
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.bind((self._host, self._port))
-        s.listen(1)
-        s.settimeout(self.SOCKET_TIMEOUT)
-        conn = None
+        """Get NMEA data from the queue and send to the socket for ts2phc."""
         while self._server_running:
             try:
-                conn, addr = s.accept()
-                logging.info('Connected from {}'.format(addr))
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.bind((self._host, self._port))
+                s.listen(1)
+                s.settimeout(self.SOCKET_TIMEOUT)
+                conn = None
                 while self._server_running:
-                    with self._condition:
-                        self._condition.wait()
-                        while True:
-                            try:
-                                line = self._queue.get(block=False)
-                                conn.sendall(line)
-                            except queue.Empty:
-                                break
-            except (OSError, FileNotFoundError):
+                    try:
+                        conn, addr = s.accept()
+                        logging.info('Connected from: {}'.format(addr))
+                        while self._server_running:
+                            with self._condition:
+                                self._condition.wait()
+                                while True:
+                                    try:
+                                        line = self._queue.get(block=False)
+                                        conn.sendall(line)
+                                    except queue.Empty:
+                                        break
+                    except (OSError, FileNotFoundError) as error:
+                        # /dev/ttyUSB0 does not exist.
+                        logging.error('ts2phc socket error: {}'.format(error))
+                        pass
+                    finally:
+                        if conn:
+                            conn.close()
+                            conn = None
+                    time.sleep(1)
+            except (OSError, FileNotFoundError) as error:
                 # /dev/ttyUSB0 does not exist.
-                logging.warning('ts2phc socket error!')
-                pass
-            finally:
-                if conn:
-                    conn.close()
-                    conn = None
-            time.sleep(1)
+                logging.error('Socket error: {}'.format(error))
+                time.sleep(1)
 
 
     def _parse_line(self, line):
+        """Parse NMEA data and save to the thread safe storage."""
         try:
             obj = {}
             gps_data = {}
@@ -115,15 +167,14 @@ class PhcServer(object):
 
             logging.debug("gps_data: {}".format(gps_data))
 
-            for sm in self._nmea_tags:
-                if sm in gps_data:
-                    self.data[sm] = gps_data[sm]
+            self.ts_dict.update_gnss_data(gps_data)
 
         except (pynmea2.nmea.ParseError, pynmea2.nmea.ChecksumError) as e:
             logging.warn("Ignoring line: {}".format(line))
 
 
     def _put_line_to_queue(self, line):
+        """One NMEA data line from TTY to be added to the queue"""
         with self._condition:
             try:
                 self._queue.put(line, block=False)
@@ -132,15 +183,10 @@ class PhcServer(object):
             self._condition.notify()
 
 
-    def _clear_data(self):
-        for i in self._nmea_tags:
-            self.data[i] = {}
-
-
     def _thread_tty(self):
-        """Detect device by sending 'type' command."""
+        """Get NMEA data from TTY. Parse and send to local queue."""
         ser = None
-        logging.info('Process started {}'.format(self._tty_path))
+        logging.info('Process started on: {}'.format(self._tty_path))
         while self._tty_running:
             try:
                 ser = serial.Serial(
@@ -158,11 +204,11 @@ class PhcServer(object):
                     line = ser.readline(self.MAX_BUFFER_SIZE)
                     if len(line) == 0:
                         logging.error('Serial timeout!')
-                        self._clear_data()
+                        self.ts_dict.clear_gnss_data()
                         continue
                     if len(line) >= self.MAX_BUFFER_SIZE:
                         logging.error('Serial buffer overflow!')
-                        self._clear_data()
+                        self.ts_dict.clear_gnss_data()
                         continue
                     if line[0] != '$'.encode()[0]:
                         continue
@@ -181,26 +227,3 @@ class PhcServer(object):
                     ser.close()
                     ser = None
             time.sleep(1)
-
-
-if __name__ == '__main__':
-    logging.basicConfig(level=logging.INFO)
-    tty_dev = '/dev/ttyUSB1'
-    if len(sys.argv) == 2:
-        tty_dev = str(sys.argv[1])
-    server = PhcServer('192.168.3.10', 4161, tty_dev)
-    time.sleep(5)
-    server.add_tty('/dev/ttyUSB2')
-    time.sleep(10)
-    server.add_tty('/dev/ttyUSB1')
-    time.sleep(10)
-    server.add_tty('/dev/ttyUSB2')
-    time.sleep(10)
-    server.add_tty('/dev/ttyUSB1')
-    time.sleep(10)
-    server.add_tty('/dev/ttyUSB2')
-    time.sleep(10)
-    server.add_tty('/dev/ttyUSB1')
-    time.sleep(10)
-
-    # server.process()
