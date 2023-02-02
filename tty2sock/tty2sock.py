@@ -11,6 +11,7 @@ from .threadsafedata import ThreadSafeDict
 from dataclasses import dataclass, field
 import typing
 import json
+import re
 
 
 @dataclass
@@ -54,8 +55,14 @@ class PhcServer(object):
     SOCKET_TIMEOUT = float(10.0)
     MAX_BUFFER_SIZE = 2048
     QUEUE_SIZE = 20
+    SET_CONST_RESULT_RE = re.compile(r'''
+    ^[$]{1}PTWSMODE,(?P<set_const_result_str>[A-Z]+)\S*[*]{1}
+    ''', re.X)
+
     def __init__(self, host='localhost', port=4161, tty_path=None):
         self.ts_dict = ThreadSafePhcServerDict()
+        self.ts_cmd = ThreadSafeDict()
+        self.ts_cmd.set_param('set_const', {'const': [], 'status': 'DONE'})
         self._host = host
         self._port = port
         self._tty_path = tty_path
@@ -112,6 +119,15 @@ class PhcServer(object):
         return self.ts_dict.get_gnss_data()
 
 
+    def set_constellation(self, satellites):
+        cmd = {'const': satellites, 'status': 'TODO'}
+        self.ts_cmd.set_param('set_const', cmd)
+
+
+    def get_constellation(self):
+        return self.ts_cmd.get_param('set_const')
+
+
     def _thread_server(self):
         """Get NMEA data from the queue and send to the socket for ts2phc."""
         while self._server_running:
@@ -154,6 +170,10 @@ class PhcServer(object):
         try:
             obj = {}
             gps_data = {}
+            match = self.SET_CONST_RESULT_RE.match(line)
+            if match:
+                self.ts_cmd.set_param('set_const', {'status': match.group('set_const_result_str')})
+
             nmeaobj = pynmea2.parse(line)
             for i in range(len(nmeaobj.fields)):
                 if (i < len(nmeaobj.data)):
@@ -202,6 +222,7 @@ class PhcServer(object):
 
                 while self._tty_running:
                     line = ser.readline(self.MAX_BUFFER_SIZE)
+                    # logging.error('line {}'.format(line))
                     if len(line) == 0:
                         logging.error('Serial timeout!')
                         self.ts_dict.clear_gnss_data()
@@ -214,6 +235,18 @@ class PhcServer(object):
                         continue
                     self._parse_line(line.decode('utf-8'))
                     self._put_line_to_queue(line)
+
+                    cmd = self.ts_cmd.get_param('set_const')
+                    if cmd['status'] == 'TODO':
+                        satellites = cmd['const']
+                        self.ts_cmd.set_param('set_const', {'status': 'RUNNING'})
+                        set_const_cmd = '$PTWSMODE,CONST,SET'
+                        for sat in satellites:
+                            set_const_cmd = set_const_cmd + ',' + sat
+                        set_const_cmd += '\r\n'
+                        ser.write(set_const_cmd.encode('utf-8'))
+
+
             except (OSError, FileNotFoundError):
                 # /dev/ttyUSB0 does not exist.
                 logging.info('Serial: {} error!'.format(self._tty_path))

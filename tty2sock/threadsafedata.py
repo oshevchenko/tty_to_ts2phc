@@ -25,25 +25,18 @@ class ThreadSafeDict:
 
 
 if __name__ == '__main__':
-    test1_obj = ThreadSafePhcServerDict(nmea_tags=['GGA', 'RMC', 'XXX'])
+
+    sss = {'const': ['GLO', 'GPS', 'BDS'], 'status': 'TODO'}
+    test1_obj = ThreadSafeDict()
+    test1_obj.set_param('set_const', sss)
     print(test1_obj)
-    sss = {'GGA': {'sss': 'dddddd'}}
-    test1_obj.update_gnss_data(sss)
-    print(test1_obj)
-    test1_obj.set_param("xyz",10)
-    test1_obj.set_param("xya","11")
-    test1_obj.set_param("xyd","12")
-    test1_obj.set_param("xyv","13")
+    cmd = test1_obj.get_param('set_const')
+    if cmd['status'] == 'TODO':
+        satellites = cmd['const']
+        set_const_cmd = '$PTWSMODE,CONST,SET'
 
-    xyz = test1_obj.get_param("xyddz")
-    print(type(xyz), xyz)
-    print(type(json.dumps(None)))
-    xya = test1_obj.get_param("xya")
-
-    print(test1_obj, type(xyz), type(xya))
-    test1_obj.set_param("xyz","20")
-    xyz1 = test1_obj.get_param("xyz")
-
-    print(test1_obj, xyz, type(xyz1))
-    # print(test2_obj.param["xyz"])
-
+        for sat in satellites:
+            set_const_cmd = set_const_cmd + ',' + sat
+        set_const_cmd += '\r\n'
+        print(set_const_cmd.encode('utf-8'))
+        # sock.write(set_const_cmd.encode('utf-8'))

@@ -15,6 +15,18 @@ if __name__ == '__main__':
     while True:
         time.sleep(5)
         logging.info('NMEA data {}'.format(server.get_nmea_data()))
-
+        time.sleep(1)
+        server.set_constellation(['GLO', 'GPS', 'BDS'])
+        time.sleep(2)
+        logging.info('server.get_constellation should be OK {}'.format(server.get_constellation()))
+        server.set_constellation(['GLO', 'GPS', 'XXX'])
+        time.sleep(2)
+        logging.info('server.get_constellation  should be error {}'.format(server.get_constellation()))
+        server.set_constellation(['GLO', 'GPS', 'BDS'])
+        time.sleep(2)
+        logging.info('server.get_constellation should be OK {}'.format(server.get_constellation()))
+        server.set_constellation(['GLO', 'GPS', 'XXX'])
+        time.sleep(2)
+        logging.info('server.get_constellation  should be error {}'.format(server.get_constellation()))
 
     # server.process()
