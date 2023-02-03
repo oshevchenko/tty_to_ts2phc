@@ -173,6 +173,7 @@ class PhcServer(object):
             match = self.SET_CONST_RESULT_RE.match(line)
             if match:
                 self.ts_cmd.set_param('set_const', {'status': match.group('set_const_result_str')})
+                raise pynmea2.nmea.ParseError(None, None)
 
             nmeaobj = pynmea2.parse(line)
             for i in range(len(nmeaobj.fields)):
