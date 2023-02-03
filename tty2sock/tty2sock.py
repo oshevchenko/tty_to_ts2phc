@@ -22,7 +22,7 @@ class ThreadSafePhcServerDict(ThreadSafeDict):
         super().__post_init__()
         data = {}
         for i in self.nmea_tags:
-            data[i] = None
+            data[i] = {}
         super().set_param('gnss', data)
 
     def update_gnss_data(self, gnss_data):
@@ -45,7 +45,7 @@ class ThreadSafePhcServerDict(ThreadSafeDict):
     def clear_gnss_data(self):
         data = {}
         for i in self.nmea_tags:
-            data[i] = None
+            data[i] = {}
         super().set_param('gnss', data)
 
 

@@ -11,7 +11,8 @@ if __name__ == '__main__':
         host = str(sys.argv[2])
 
     server = PhcServer(host, 4161, tty_dev)
-
+    data =server.get_nmea_data()
+    print(data, type(data))
     while True:
         time.sleep(5)
         logging.info('NMEA data {}'.format(server.get_nmea_data()))
